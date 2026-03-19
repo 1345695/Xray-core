@@ -44,11 +44,15 @@ var (
 	globalDialerAccess sync.Mutex
 )
 
+const streamOneForcedMaxConnections = int32(4)
+
 func getHTTPClient(ctx context.Context, dest net.Destination, streamSettings *internet.MemoryStreamConfig) (DialerClient, *XmuxClient) {
 	realityConfig := reality.ConfigFromStreamSettings(streamSettings)
+	transportConfig := streamSettings.ProtocolSettings.(*Config)
+	mode := normalizeMode(transportConfig, realityConfig)
 
 	if browser_dialer.HasBrowserDialer() && realityConfig == nil {
-		return &BrowserDialerClient{transportConfig: streamSettings.ProtocolSettings.(*Config)}, nil
+		return &BrowserDialerClient{transportConfig: transportConfig}, nil
 	}
 
 	globalDialerAccess.Lock()
@@ -63,10 +67,17 @@ func getHTTPClient(ctx context.Context, dest net.Destination, streamSettings *in
 	xmuxManager, found := globalDialerMap[key]
 
 	if !found {
-		transportConfig := streamSettings.ProtocolSettings.(*Config)
 		var xmuxConfig XmuxConfig
 		if transportConfig.Xmux != nil {
 			xmuxConfig = *transportConfig.Xmux
+		}
+
+		if mode == "stream-one" {
+			xmuxConfig.MaxConnections = &RangeConfig{From: streamOneForcedMaxConnections, To: streamOneForcedMaxConnections}
+			xmuxConfig.MaxConcurrency = &RangeConfig{From: 0, To: 0}
+			xmuxConfig.CMaxReuseTimes = &RangeConfig{From: 0, To: 0}
+			xmuxConfig.HMaxRequestTimes = &RangeConfig{From: 0, To: 0}
+			xmuxConfig.HMaxReusableSecs = &RangeConfig{From: 0, To: 0}
 		}
 
 		xmuxManager = NewXmuxManager(xmuxConfig, func() XmuxConn {
@@ -96,6 +107,20 @@ func decideHTTPVersion(tlsConfig *tls.Config, realityConfig *reality.Config) str
 		return "3"
 	}
 	return "2"
+}
+
+func normalizeMode(transportConfiguration *Config, realityConfig *reality.Config) string {
+	mode := transportConfiguration.Mode
+	if mode == "" || mode == "auto" {
+		mode = "packet-up"
+		if realityConfig != nil {
+			mode = "stream-one"
+			if transportConfiguration.DownloadSettings != nil {
+				mode = "stream-up"
+			}
+		}
+	}
+	return mode
 }
 
 func createHTTPClient(dest net.Destination, streamSettings *internet.MemoryStreamConfig) DialerClient {
@@ -378,16 +403,7 @@ func Dial(ctx context.Context, dest net.Destination, streamSettings *internet.Me
 
 	httpClient, xmuxClient := getHTTPClient(ctx, dest, streamSettings)
 
-	mode := transportConfiguration.Mode
-	if mode == "" || mode == "auto" {
-		mode = "packet-up"
-		if realityConfig != nil {
-			mode = "stream-one"
-			if transportConfiguration.DownloadSettings != nil {
-				mode = "stream-up"
-			}
-		}
-	}
+	mode := normalizeMode(transportConfiguration, realityConfig)
 
 	sessionId := ""
 	if mode != "stream-one" {
