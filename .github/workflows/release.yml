@@ -54,23 +54,93 @@ jobs:
           done
 
       - name: Trigger Asset Update Workflow if Assets Missing
+        id: trigger-assets-update
         if: steps.check-assets.outputs.missing == 'true'
         uses: actions/github-script@v8
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
+            const workflowId = 'scheduled-assets-update.yml';
             const { owner, repo } = context.repo;
-            await github.rest.actions.createWorkflowDispatch({
-              owner,
-              repo,
-              workflow_id: 'scheduled-assets-update.yml',
-              ref: context.ref
-            });
-            console.log('Triggered scheduled-assets-update.yml due to missing assets on branch:', context.ref);
+
+            try {
+              const workflow = await github.rest.actions.getWorkflow({
+                owner,
+                repo,
+                workflow_id: workflowId
+              });
+
+              if (workflow.data.state !== 'active') {
+                core.warning(`Skip dispatch: ${workflowId} is not active (state=${workflow.data.state}).`);
+                core.setOutput('dispatched', 'false');
+                return;
+              }
+
+              await github.rest.actions.createWorkflowDispatch({
+                owner,
+                repo,
+                workflow_id: workflowId,
+                ref: context.ref
+              });
+
+              console.log(`Triggered ${workflowId} due to missing assets on branch: ${context.ref}`);
+              core.setOutput('dispatched', 'true');
+            } catch (error) {
+              core.warning(`Skip dispatch ${workflowId}: ${error.message}`);
+              core.setOutput('dispatched', 'false');
+            }
 
       - name: Sleep for 90 seconds if Assets Missing
-        if: steps.check-assets.outputs.missing == 'true'
+        if: steps.check-assets.outputs.missing == 'true' && steps.trigger-assets-update.outputs.dispatched == 'true'
         run: sleep 90
+
+      - name: Download missing assets locally if dispatch is unavailable
+        id: local-assets-update
+        if: steps.check-assets.outputs.missing == 'true' && steps.trigger-assets-update.outputs.dispatched != 'true'
+        run: |
+          [ -d 'resources' ] || mkdir resources
+          UPDATED=false
+
+          for FILE in geoip geosite
+          do
+            if [ -s "./resources/${FILE}.dat" ]; then
+              echo "${FILE}.dat exists."
+            else
+              echo "Downloading ${FILE}.dat..."
+              curl -fsSL "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/${FILE}.dat" -o "./resources/${FILE}.dat"
+              UPDATED=true
+            fi
+          done
+
+          if [ -s "./resources/wintun/bin/amd64/wintun.dll" ] && \
+             [ -s "./resources/wintun/bin/x86/wintun.dll" ] && \
+             [ -s "./resources/wintun/bin/arm64/wintun.dll" ] && \
+             [ -s "./resources/wintun/LICENSE.txt" ]; then
+            echo "Wintun assets exist."
+          else
+            echo "Downloading Wintun assets..."
+            curl -fsSL "https://www.wintun.net/builds/wintun-0.14.1.zip" -o wintun.zip
+            unzip -u wintun.zip -d resources/
+            UPDATED=true
+          fi
+
+          if [ "$UPDATED" = "true" ]; then
+            echo "updated=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Save Geodat Cache (local fallback)
+        if: steps.local-assets-update.outputs.updated == 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: resources
+          key: xray-geodat-${{ github.sha }}-${{ github.run_number }}
+
+      - name: Save Wintun Cache (local fallback)
+        if: steps.local-assets-update.outputs.updated == 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: resources
+          key: xray-wintun-${{ github.sha }}-${{ github.run_number }}
 
   build:
     needs: check-assets
