@@ -27,8 +27,6 @@ type XmuxManager struct {
 	xmuxConfig  XmuxConfig
 	concurrency int32
 	connections int32
-	roundRobin  bool
-	roundIndex  uint64
 	newConnFunc func() XmuxConn
 	xmuxClients []*XmuxClient
 }
@@ -38,25 +36,8 @@ func NewXmuxManager(xmuxConfig XmuxConfig, newConnFunc func() XmuxConn) *XmuxMan
 		xmuxConfig:  xmuxConfig,
 		concurrency: xmuxConfig.GetNormalizedMaxConcurrency().rand(),
 		connections: xmuxConfig.GetNormalizedMaxConnections().rand(),
-		roundRobin:  false,
 		newConnFunc: newConnFunc,
 		xmuxClients: make([]*XmuxClient, 0),
-	}
-}
-
-func (m *XmuxManager) EnableRoundRobin() {
-	m.roundRobin = true
-}
-
-func (m *XmuxManager) WarmupConnections(count int32) {
-	if count <= 0 {
-		return
-	}
-	if m.connections > 0 && count > m.connections {
-		count = m.connections
-	}
-	for int32(len(m.xmuxClients)) < count {
-		m.newXmuxClient()
 	}
 }
 
@@ -104,10 +85,7 @@ func (m *XmuxManager) GetXmuxClient(ctx context.Context) *XmuxClient { // when l
 
 	if m.connections > 0 && len(m.xmuxClients) < int(m.connections) {
 		errors.LogDebug(ctx, "XMUX: creating xmuxClient because maxConnections was not hit, xmuxClients = ", len(m.xmuxClients))
-		if !m.roundRobin {
-			return m.newXmuxClient()
-		}
-		m.newXmuxClient()
+		return m.newXmuxClient()
 	}
 
 	xmuxClients := make([]*XmuxClient, 0)
@@ -124,16 +102,6 @@ func (m *XmuxManager) GetXmuxClient(ctx context.Context) *XmuxClient { // when l
 	if len(xmuxClients) == 0 {
 		errors.LogDebug(ctx, "XMUX: creating xmuxClient because maxConcurrency was hit, xmuxClients = ", len(m.xmuxClients))
 		return m.newXmuxClient()
-	}
-
-	if m.roundRobin {
-		i := m.roundIndex % uint64(len(xmuxClients))
-		m.roundIndex++
-		xmuxClient := xmuxClients[i]
-		if xmuxClient.leftUsage > 0 {
-			xmuxClient.leftUsage -= 1
-		}
-		return xmuxClient
 	}
 
 	i, _ := rand.Int(rand.Reader, big.NewInt(int64(len(xmuxClients))))

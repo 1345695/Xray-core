@@ -86,11 +86,6 @@ func getHTTPClient(ctx context.Context, dest net.Destination, streamSettings *in
 		globalDialerMap[key] = xmuxManager
 	}
 
-	if mode == "stream-one" {
-		xmuxManager.EnableRoundRobin()
-		xmuxManager.WarmupConnections(streamOneForcedMaxConnections)
-	}
-
 	xmuxClient := xmuxManager.GetXmuxClient(ctx)
 	return xmuxClient.XmuxConn.(DialerClient), xmuxClient
 }
