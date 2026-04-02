@@ -43,8 +43,15 @@ type dialerConf struct {
 	*internet.MemoryStreamConfig
 }
 
+const grpcForcedMaxConnections = 4
+
+type grpcClientPool struct {
+	clients [grpcForcedMaxConnections]*grpc.ClientConn
+	next    int
+}
+
 var (
-	globalDialerMap    map[dialerConf]*grpc.ClientConn
+	globalDialerMap    map[dialerConf]*grpcClientPool
 	globalDialerAccess sync.Mutex
 )
 
@@ -79,17 +86,47 @@ func getGrpcClient(ctx context.Context, dest net.Destination, streamSettings *in
 	defer globalDialerAccess.Unlock()
 
 	if globalDialerMap == nil {
-		globalDialerMap = make(map[dialerConf]*grpc.ClientConn)
+		globalDialerMap = make(map[dialerConf]*grpcClientPool)
 	}
 	tlsConfig := tls.ConfigFromStreamSettings(streamSettings)
 	realityConfig := reality.ConfigFromStreamSettings(streamSettings)
 	sockopt := streamSettings.SocketSettings
 	grpcSettings := streamSettings.ProtocolSettings.(*Config)
+	key := dialerConf{dest, streamSettings}
 
-	if client, found := globalDialerMap[dialerConf{dest, streamSettings}]; found && client.GetState() != connectivity.Shutdown {
+	pool, found := globalDialerMap[key]
+	if !found {
+		pool = &grpcClientPool{}
+		globalDialerMap[key] = pool
+	}
+
+	var lastErr error
+	for i := 0; i < grpcForcedMaxConnections; i++ {
+		idx := (pool.next + i) % grpcForcedMaxConnections
+		if client := pool.clients[idx]; client != nil && client.GetState() != connectivity.Shutdown {
+			pool.next = (idx + 1) % grpcForcedMaxConnections
+			return client, nil
+		}
+
+		client, err := newGrpcClient(ctx, dest, streamSettings, sockopt, tlsConfig, realityConfig, grpcSettings)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		pool.clients[idx] = client
+		pool.next = (idx + 1) % grpcForcedMaxConnections
 		return client, nil
 	}
 
+	if lastErr != nil {
+		return nil, lastErr
+	}
+
+	return nil, errors.New("cannot get gRPC client from pool")
+}
+
+func newGrpcClient(ctx context.Context, dest net.Destination, streamSettings *internet.MemoryStreamConfig, sockopt *internet.SocketConfig, tlsConfig *tls.Config, realityConfig *reality.Config, grpcSettings *Config) (*grpc.ClientConn, error) {
 	dialOptions := []grpc.DialOption{
 		grpc.WithConnectParams(grpc.ConnectParams{
 			Backoff: backoff.Config{
@@ -205,7 +242,6 @@ func getGrpcClient(ctx context.Context, dest net.Destination, streamSettings *in
 		setUserAgent(conn, userAgent)
 		conn.Connect()
 	}
-	globalDialerMap[dialerConf{dest, streamSettings}] = conn
 	return conn, err
 }
 
