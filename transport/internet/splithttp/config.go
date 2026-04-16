@@ -306,12 +306,7 @@ func (c *Config) FillStreamRequest(request *http.Request, sessionId string, seqS
 		}
 		config.Method = PaddingMethod(c.XPaddingMethod)
 	} else {
-		config.Placement = XPaddingPlacement{
-			Placement: PlacementQueryInHeader,
-			Key:       "x_padding",
-			Header:    "Referer",
-			RawURL:    request.URL.String(),
-		}
+		config = defaultRefererPaddingConfig(request.URL.String(), length)
 	}
 
 	c.ApplyXPaddingToRequest(request, config)
@@ -356,12 +351,7 @@ func (c *Config) FillPacketRequest(request *http.Request, sessionId string, seqS
 		}
 		config.Method = PaddingMethod(c.XPaddingMethod)
 	} else {
-		config.Placement = XPaddingPlacement{
-			Placement: PlacementQueryInHeader,
-			Key:       "x_padding",
-			Header:    "Referer",
-			RawURL:    request.URL.String(),
-		}
+		config = defaultRefererPaddingConfig(request.URL.String(), length)
 	}
 
 	c.ApplyXPaddingToRequest(request, config)

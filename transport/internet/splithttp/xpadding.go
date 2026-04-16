@@ -13,11 +13,14 @@ import (
 type PaddingMethod string
 
 const (
-	PaddingMethodRepeatX  PaddingMethod = "repeat-x"
-	PaddingMethodTokenish PaddingMethod = "tokenish"
+	PaddingMethodRepeatX      PaddingMethod = "repeat-x"
+	PaddingMethodTokenish     PaddingMethod = "tokenish"
+	paddingMethodRandomBase62 PaddingMethod = "random-base62"
 )
 
 const charsetBase62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+const defaultRefererPaddingKey = "cf_padd"
+const legacyRefererPaddingKey = "x_padding"
 
 // Huffman encoding gives ~20% size reduction for base62 sequences
 const avgHuffmanBytesPerCharBase62 = 0.8
@@ -134,6 +137,12 @@ func GeneratePadding(method PaddingMethod, length int) string {
 	switch method {
 	case PaddingMethodRepeatX:
 		return strings.Repeat("X", length)
+	case paddingMethodRandomBase62:
+		paddingValue, ok := randStringFromCharset(length, charsetBase62)
+		if !ok {
+			return strings.Repeat("X", length)
+		}
+		return paddingValue
 	case PaddingMethodTokenish:
 		paddingValue := GenerateTokenishPaddingBase62(length)
 		if paddingValue == "" {
@@ -185,6 +194,28 @@ func (c *Config) GetNormalizedXPaddingBytes() RangeConfig {
 	}
 
 	return *c.XPaddingBytes
+}
+
+func defaultRefererPaddingConfig(rawURL string, length int) XPaddingConfig {
+	return XPaddingConfig{
+		Length: length,
+		Placement: XPaddingPlacement{
+			Placement: PlacementQueryInHeader,
+			Key:       defaultRefererPaddingKey,
+			Header:    "Referer",
+			RawURL:    rawURL,
+		},
+		Method: paddingMethodRandomBase62,
+	}
+}
+
+func getFirstQueryValue(values url.Values, keys ...string) (string, string) {
+	for _, key := range keys {
+		if value := values.Get(key); value != "" {
+			return value, key
+		}
+	}
+	return "", ""
 }
 
 func (c *Config) ApplyXPaddingToHeader(h http.Header, config XPaddingConfig) {
@@ -258,13 +289,19 @@ func (c *Config) ExtractXPaddingFromRequest(req *http.Request, obfsMode bool) (s
 
 		if referrer != "" {
 			if referrerURL, err := url.Parse(referrer); err == nil {
-				paddingValue := referrerURL.Query().Get("x_padding")
-				paddingPlacement := PlacementQueryInHeader + "=Referer, key=x_padding"
+				paddingValue, paddingKey := getFirstQueryValue(referrerURL.Query(), defaultRefererPaddingKey, legacyRefererPaddingKey)
+				if paddingKey == "" {
+					paddingKey = defaultRefererPaddingKey
+				}
+				paddingPlacement := PlacementQueryInHeader + "=Referer, key=" + paddingKey
 				return paddingValue, paddingPlacement
 			}
 		} else {
-			paddingValue := req.URL.Query().Get("x_padding")
-			return paddingValue, PlacementQuery + ", key=x_padding"
+			paddingValue, paddingKey := getFirstQueryValue(req.URL.Query(), defaultRefererPaddingKey, legacyRefererPaddingKey)
+			if paddingKey == "" {
+				paddingKey = defaultRefererPaddingKey
+			}
+			return paddingValue, PlacementQuery + ", key=" + paddingKey
 		}
 	}
 
