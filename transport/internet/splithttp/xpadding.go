@@ -19,8 +19,26 @@ const (
 )
 
 const charsetBase62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
-const defaultRefererPaddingKey = "cf_padd"
-const legacyRefererPaddingKey = "x_padding"
+const defaultRefererPaddingKey = "x_padding"
+const pathPaddingKeyConfig = "pd"
+const randomPaddingKeyConfigValue = "random"
+const offPaddingKeyConfigValue = "off"
+
+func generateRandomPaddingKey() string {
+	b := make([]byte, 1)
+	for {
+		if _, err := rand.Read(b); err != nil {
+			return defaultRefererPaddingKey
+		}
+		if b[0] < 252 {
+			length := int(b[0]%63) + 2
+			if key, ok := randStringFromCharset(length, charsetBase62); ok {
+				return key
+			}
+			return defaultRefererPaddingKey
+		}
+	}
+}
 
 // Huffman encoding gives ~20% size reduction for base62 sequences
 const avgHuffmanBytesPerCharBase62 = 0.8
@@ -196,14 +214,31 @@ func (c *Config) GetNormalizedXPaddingBytes() RangeConfig {
 	return *c.XPaddingBytes
 }
 
-func defaultRefererPaddingConfig(rawURL string, length int) XPaddingConfig {
+func getDefaultRefererURL(rawURL string) string {
+	refererURL := rawURL
+	if parsedURL, err := url.Parse(rawURL); err == nil && parsedURL != nil {
+		parsedURL.Path = "/"
+		parsedURL.RawPath = ""
+		parsedURL.RawQuery = ""
+		parsedURL.Fragment = ""
+		refererURL = parsedURL.String()
+	}
+
+	return refererURL
+}
+
+func defaultRefererPaddingConfig(rawURL string, length int, key string) XPaddingConfig {
+	if key == randomPaddingKeyConfigValue {
+		key = generateRandomPaddingKey()
+	}
+
 	return XPaddingConfig{
 		Length: length,
 		Placement: XPaddingPlacement{
 			Placement: PlacementQueryInHeader,
-			Key:       defaultRefererPaddingKey,
+			Key:       key,
 			Header:    "Referer",
-			RawURL:    rawURL,
+			RawURL:    getDefaultRefererURL(rawURL),
 		},
 		Method: paddingMethodRandomBase62,
 	}
@@ -216,6 +251,33 @@ func getFirstQueryValue(values url.Values, keys ...string) (string, string) {
 		}
 	}
 	return "", ""
+}
+
+func getFirstNonEmptyQueryValue(values url.Values) (string, string) {
+	for key, items := range values {
+		for _, value := range items {
+			if value != "" {
+				return value, key
+			}
+		}
+	}
+
+	return "", ""
+}
+
+func (c *Config) getConfiguredPaddingValue(values url.Values) (string, string) {
+	paddingKey := c.GetNormalizedPathPaddingKey()
+	if paddingKey == offPaddingKeyConfigValue {
+		return "", offPaddingKeyConfigValue
+	}
+	if paddingKey == randomPaddingKeyConfigValue {
+		if paddingValue, actualKey := getFirstNonEmptyQueryValue(values); actualKey != "" {
+			return paddingValue, actualKey
+		}
+		return "", randomPaddingKeyConfigValue
+	}
+
+	return values.Get(paddingKey), paddingKey
 }
 
 func (c *Config) ApplyXPaddingToHeader(h http.Header, config XPaddingConfig) {
@@ -233,7 +295,7 @@ func (c *Config) ApplyXPaddingToHeader(h http.Header, config XPaddingConfig) {
 		if err != nil || u == nil {
 			return
 		}
-		u.RawQuery = p.Key + "=" + paddingValue
+		u.RawQuery = appendRawQueryParameter(u.RawQuery, p.Key, paddingValue)
 		h.Set(p.Header, u.String())
 	}
 }
@@ -285,22 +347,20 @@ func (c *Config) ExtractXPaddingFromRequest(req *http.Request, obfsMode bool) (s
 	}
 
 	if !obfsMode {
+		if c.GetNormalizedPathPaddingKey() == offPaddingKeyConfigValue {
+			return "", "disabled"
+		}
+
 		referrer := req.Header.Get("Referer")
 
 		if referrer != "" {
 			if referrerURL, err := url.Parse(referrer); err == nil {
-				paddingValue, paddingKey := getFirstQueryValue(referrerURL.Query(), defaultRefererPaddingKey, legacyRefererPaddingKey)
-				if paddingKey == "" {
-					paddingKey = defaultRefererPaddingKey
-				}
+				paddingValue, paddingKey := c.getConfiguredPaddingValue(referrerURL.Query())
 				paddingPlacement := PlacementQueryInHeader + "=Referer, key=" + paddingKey
 				return paddingValue, paddingPlacement
 			}
 		} else {
-			paddingValue, paddingKey := getFirstQueryValue(req.URL.Query(), defaultRefererPaddingKey, legacyRefererPaddingKey)
-			if paddingKey == "" {
-				paddingKey = defaultRefererPaddingKey
-			}
+			paddingValue, paddingKey := c.getConfiguredPaddingValue(req.URL.Query())
 			return paddingValue, PlacementQuery + ", key=" + paddingKey
 		}
 	}
@@ -342,6 +402,10 @@ func (c *Config) ExtractXPaddingFromRequest(req *http.Request, obfsMode bool) (s
 }
 
 func (c *Config) IsPaddingValid(paddingValue string, from, to int32, method PaddingMethod) bool {
+	if !c.XPaddingObfsMode && c.GetNormalizedPathPaddingKey() == offPaddingKeyConfigValue {
+		return paddingValue == ""
+	}
+
 	if paddingValue == "" {
 		return false
 	}

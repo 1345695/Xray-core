@@ -413,6 +413,58 @@ func Test_queryString(t *testing.T) {
 	common.Must(listen.Close())
 }
 
+func Test_ServerAcceptsRequestsWithoutValidPadding(t *testing.T) {
+	listenPort := tcp.PickPort()
+	listen, err := ListenXH(context.Background(), net.LocalHostIP, listenPort, &internet.MemoryStreamConfig{
+		ProtocolName: "splithttp",
+		ProtocolSettings: &Config{
+			Path: "/sh",
+		},
+	}, func(conn stat.Connection) {
+		go func(c stat.Connection) {
+			_ = c.Close()
+		}(conn)
+	})
+	common.Must(err)
+	defer listen.Close()
+
+	tests := []struct {
+		name    string
+		referer string
+	}{
+		{
+			name:    "missing padding",
+			referer: "",
+		},
+		{
+			name:    "malformed padding",
+			referer: "https://example.com/?x_padding=a",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodGet, "http://"+net.LocalHostIP.String()+":"+listenPort.String()+"/sh/", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.referer != "" {
+				req.Header.Set("Referer", tt.referer)
+			}
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("unexpected status: got %d want %d", resp.StatusCode, http.StatusOK)
+			}
+		})
+	}
+}
+
 func Test_maxUpload(t *testing.T) {
 	listenPort := tcp.PickPort()
 	streamSettings := &internet.MemoryStreamConfig{

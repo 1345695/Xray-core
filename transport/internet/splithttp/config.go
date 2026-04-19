@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/xtls/xray-core/common"
@@ -30,12 +31,7 @@ func (c *Config) GetNormalizedPath() string {
 }
 
 func (c *Config) GetNormalizedQuery() string {
-	pathAndQuery := strings.SplitN(c.Path, "?", 2)
-	query := ""
-
-	if len(pathAndQuery) > 1 {
-		query = pathAndQuery[1]
-	}
+	query := stripRawQueryParameters(c.getPathRawQuery(), pathPaddingKeyConfig)
 
 	/*
 		if query != "" {
@@ -45,6 +41,87 @@ func (c *Config) GetNormalizedQuery() string {
 	*/
 
 	return query
+}
+
+func (c *Config) GetNormalizedPathPaddingKey() string {
+	if values := c.getPathQueryValues(); values != nil {
+		if paddingKey := values.Get(pathPaddingKeyConfig); paddingKey != "" {
+			return paddingKey
+		}
+	}
+
+	return defaultRefererPaddingKey
+}
+
+func (c *Config) getPathRawQuery() string {
+	pathAndQuery := strings.SplitN(c.Path, "?", 2)
+	if len(pathAndQuery) < 2 {
+		return ""
+	}
+
+	return pathAndQuery[1]
+}
+
+func (c *Config) getPathQueryValues() url.Values {
+	rawQuery := c.getPathRawQuery()
+	if rawQuery == "" {
+		return nil
+	}
+
+	values, err := url.ParseQuery(rawQuery)
+	if err != nil {
+		return nil
+	}
+
+	return values
+}
+
+func stripRawQueryParameters(rawQuery string, keys ...string) string {
+	if rawQuery == "" {
+		return ""
+	}
+
+	parts := strings.Split(rawQuery, "&")
+	kept := make([]string, 0, len(parts))
+
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+
+		key := part
+		if eq := strings.IndexByte(part, '='); eq >= 0 {
+			key = part[:eq]
+		}
+
+		decodedKey, err := url.QueryUnescape(key)
+		if err != nil {
+			decodedKey = key
+		}
+
+		shouldDrop := false
+		for _, targetKey := range keys {
+			if decodedKey == targetKey || key == targetKey {
+				shouldDrop = true
+				break
+			}
+		}
+
+		if !shouldDrop {
+			kept = append(kept, part)
+		}
+	}
+
+	return strings.Join(kept, "&")
+}
+
+func appendRawQueryParameter(rawQuery, key, value string) string {
+	param := url.QueryEscape(key) + "=" + url.QueryEscape(value)
+	if rawQuery == "" {
+		return param
+	}
+
+	return rawQuery + "&" + param
 }
 
 func (c *Config) GetRequestHeader() http.Header {
@@ -305,11 +382,16 @@ func (c *Config) FillStreamRequest(request *http.Request, sessionId string, seqS
 			RawURL:    request.URL.String(),
 		}
 		config.Method = PaddingMethod(c.XPaddingMethod)
+		c.ApplyXPaddingToRequest(request, config)
 	} else {
-		config = defaultRefererPaddingConfig(request.URL.String(), length)
+		paddingKey := c.GetNormalizedPathPaddingKey()
+		if paddingKey == offPaddingKeyConfigValue {
+			request.Header.Set("Referer", getDefaultRefererURL(request.URL.String()))
+		} else {
+			config = defaultRefererPaddingConfig(request.URL.String(), length, paddingKey)
+			c.ApplyXPaddingToRequest(request, config)
+		}
 	}
-
-	c.ApplyXPaddingToRequest(request, config)
 	c.ApplyMetaToRequest(request, sessionId, "")
 
 	if request.Body != nil && !c.NoGRPCHeader { // stream-up/one
@@ -350,11 +432,16 @@ func (c *Config) FillPacketRequest(request *http.Request, sessionId string, seqS
 			RawURL:    request.URL.String(),
 		}
 		config.Method = PaddingMethod(c.XPaddingMethod)
+		c.ApplyXPaddingToRequest(request, config)
 	} else {
-		config = defaultRefererPaddingConfig(request.URL.String(), length)
+		paddingKey := c.GetNormalizedPathPaddingKey()
+		if paddingKey == offPaddingKeyConfigValue {
+			request.Header.Set("Referer", getDefaultRefererURL(request.URL.String()))
+		} else {
+			config = defaultRefererPaddingConfig(request.URL.String(), length, paddingKey)
+			c.ApplyXPaddingToRequest(request, config)
+		}
 	}
-
-	c.ApplyXPaddingToRequest(request, config)
 	c.ApplyMetaToRequest(request, sessionId, seqStr)
 
 	return nil
