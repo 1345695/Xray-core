@@ -52,10 +52,10 @@ func (h *requestHandler) ServeHTTP(writer http.ResponseWriter, request *http.Req
 
 	var extraReader io.Reader
 	responseHeader := http.Header{}
-	if str := request.Header.Get("Sec-WebSocket-Protocol"); str != "" {
+	if str := request.Header.Get("Referer"); str != "" {
 		if ed, err := base64.RawURLEncoding.DecodeString(replacer.Replace(str)); err == nil && len(ed) > 0 {
 			extraReader = bytes.NewReader(ed)
-			responseHeader.Set("Sec-WebSocket-Protocol", str)
+			responseHeader.Set("Referer", str)
 		}
 	}
 
