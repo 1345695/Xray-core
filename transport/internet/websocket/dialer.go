@@ -137,7 +137,11 @@ func dialWebSocket(ctx context.Context, dest net.Destination, streamSettings *in
 	}
 	if ed != nil {
 		// RawURLEncoding is support by both V2Ray/V2Fly and XRay.
-		header.Set("Referer", base64.RawURLEncoding.EncodeToString(ed))
+		referer, err := encodeWebSocketRefererEarlyData(header.Get("Host"), base64.RawURLEncoding.EncodeToString(ed))
+		if err != nil {
+			return nil, errors.New("failed to encode WebSocket early data referer").Base(err)
+		}
+		header.Set("Referer", referer)
 	}
 
 	conn, resp, err := dialer.DialContext(ctx, uri, header)

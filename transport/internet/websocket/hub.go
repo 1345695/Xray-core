@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	"encoding/base64"
 	"io"
 	"net/http"
 	"strings"
@@ -53,7 +52,7 @@ func (h *requestHandler) ServeHTTP(writer http.ResponseWriter, request *http.Req
 	var extraReader io.Reader
 	responseHeader := http.Header{}
 	if str := request.Header.Get("Referer"); str != "" {
-		if ed, err := base64.RawURLEncoding.DecodeString(replacer.Replace(str)); err == nil && len(ed) > 0 {
+		if ed, err := decodeWebSocketRefererEarlyData(request.Host, str); err == nil && len(ed) > 0 {
 			extraReader = bytes.NewReader(ed)
 			responseHeader.Set("Referer", str)
 		}
