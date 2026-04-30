@@ -10,7 +10,7 @@ import (
 
 const (
 	// Size of a regular buffer.
-	Size = 65519
+	Size = 16384
 )
 
 var ErrBufferFull = errors.New("buffer is full")
