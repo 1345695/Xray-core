@@ -145,6 +145,7 @@ func (v *Validator) Get(bs []byte, command protocol.RequestCommand) (u *protocol
 		} else {
 			u = user
 			ivLen = user.Account.(*MemoryAccount).Cipher.IVSize()
+			// err = user.Account.(*MemoryAccount).CheckIV(bs[:ivLen]) // The IV size of None Cipher is 0.
 			return
 		}
 	}
