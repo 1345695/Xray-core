@@ -171,6 +171,11 @@ type delayDialConn struct {
 	ctx            context.Context
 	dest           net.Destination
 	streamSettings *internet.MemoryStreamConfig
+	// Deadlines set before the deferred dial completes; pushed onto the real
+	// connection by applyDeadlines once the first Write has dialed.
+	deadline      time.Time
+	readDeadline  time.Time
+	writeDeadline time.Time
 }
 
 // LocalAddr returns nil until the deferred WebSocket dial has completed.
@@ -192,6 +197,58 @@ func (d *delayDialConn) RemoteAddr() net.Addr {
 	return d.Conn.RemoteAddr()
 }
 
+// SetDeadline stores the deadline until the deferred WebSocket dial has
+// completed. Without this method, Go promotes SetDeadline from the embedded
+// net.Conn; the embedded interface is nil before the first Write, so the
+// promoted call panics. Proxies that set a handshake timeout before writing
+// anything (e.g. SOCKS) rely on this.
+func (d *delayDialConn) SetDeadline(t time.Time) error {
+	d.deadline = t
+	if d.Conn == nil {
+		return nil
+	}
+	if err := d.Conn.SetReadDeadline(t); err != nil {
+		return err
+	}
+	return d.Conn.SetWriteDeadline(t)
+}
+
+// SetReadDeadline stores the deadline until the deferred WebSocket dial has
+// completed. See SetDeadline for why an explicit method is required here.
+func (d *delayDialConn) SetReadDeadline(t time.Time) error {
+	d.readDeadline = t
+	if d.Conn == nil {
+		return nil
+	}
+	return d.Conn.SetReadDeadline(t)
+}
+
+// SetWriteDeadline stores the deadline until the deferred WebSocket dial has
+// completed. See SetDeadline for why an explicit method is required here.
+func (d *delayDialConn) SetWriteDeadline(t time.Time) error {
+	d.writeDeadline = t
+	if d.Conn == nil {
+		return nil
+	}
+	return d.Conn.SetWriteDeadline(t)
+}
+
+// applyDeadlines pushes deadlines stored before the deferred dial onto the
+// real connection. Called once the first Write has completed the WebSocket
+// dial, before waking up any reader blocked in Read.
+func (d *delayDialConn) applyDeadlines() {
+	if !d.deadline.IsZero() {
+		d.Conn.SetReadDeadline(d.deadline)
+		d.Conn.SetWriteDeadline(d.deadline)
+	}
+	if !d.readDeadline.IsZero() {
+		d.Conn.SetReadDeadline(d.readDeadline)
+	}
+	if !d.writeDeadline.IsZero() {
+		d.Conn.SetWriteDeadline(d.writeDeadline)
+	}
+}
+
 func (d *delayDialConn) Write(b []byte) (int, error) {
 	if d.closed {
 		return 0, io.ErrClosedPipe
@@ -206,6 +263,7 @@ func (d *delayDialConn) Write(b []byte) (int, error) {
 			d.Close()
 			return 0, errors.New("failed to dial WebSocket").Base(err)
 		}
+		d.applyDeadlines()
 		d.dialed <- true
 		if ed != nil {
 			return len(ed), nil
